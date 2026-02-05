@@ -55,7 +55,9 @@ export const ModelProviderSchema = z
     api: ModelApiSchema.optional(),
     headers: z.record(z.string(), z.string()).optional(),
     authHeader: z.boolean().optional(),
-    models: z.array(ModelDefinitionSchema),
+    // Optional to support "override-only" providers (baseUrl/api/auth) without custom models.
+    // This matches pi-coding-agent's models.json behavior.
+    models: z.array(ModelDefinitionSchema).optional(),
   })
   .strict();
 

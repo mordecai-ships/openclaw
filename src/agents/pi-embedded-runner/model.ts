@@ -101,6 +101,44 @@ export function resolveModel(
       } as Model<Api>);
       return { model: fallbackModel, authStorage, modelRegistry };
     }
+
+    // Forward-compat: allow new Anthropic model IDs (e.g. claude-opus-4-6) before
+    // upstream model catalogs are updated. We only do this for Claude-style IDs
+    // to keep "unknown model" errors useful for obvious misconfigurations.
+    if (normalizedProvider === "anthropic" && modelId.toLowerCase().startsWith("claude-")) {
+      const seedIds = [
+        "claude-opus-4-5",
+        "claude-sonnet-4-5",
+        "claude-haiku-4-5",
+        "claude-3-7-sonnet-20250219",
+      ];
+      const seedModel = seedIds
+        .map((seedId) => modelRegistry.find(provider, seedId) as Model<Api> | undefined)
+        .find(Boolean);
+      if (seedModel) {
+        const fallbackModel = normalizeModelCompat({
+          ...seedModel,
+          id: modelId,
+          name: modelId,
+        } as Model<Api>);
+        return { model: fallbackModel, authStorage, modelRegistry };
+      }
+
+      const fallbackModel: Model<Api> = normalizeModelCompat({
+        id: modelId,
+        name: modelId,
+        api: "anthropic-messages",
+        provider,
+        baseUrl: "https://api.anthropic.com",
+        reasoning: true,
+        input: ["text", "image"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: DEFAULT_CONTEXT_TOKENS,
+        maxTokens: 64000,
+      } as Model<Api>);
+      return { model: fallbackModel, authStorage, modelRegistry };
+    }
+
     return {
       error: `Unknown model: ${provider}/${modelId}`,
       authStorage,
