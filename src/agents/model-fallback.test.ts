@@ -39,6 +39,26 @@ describe("runWithModelFallback", () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
+  it("falls back when the primary model is unknown", async () => {
+    const cfg = makeCfg();
+    const run = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Unknown model: anthropic/claude-opus-4-6"))
+      .mockResolvedValueOnce("ok");
+
+    const result = await runWithModelFallback({
+      cfg,
+      provider: "anthropic",
+      model: "claude-opus-4-6",
+      run,
+    });
+
+    expect(result.result).toBe("ok");
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(run.mock.calls[1]?.[0]).toBe("anthropic");
+    expect(run.mock.calls[1]?.[1]).toBe("claude-haiku-3-5");
+  });
+
   it("falls back on auth errors", async () => {
     const cfg = makeCfg();
     const run = vi

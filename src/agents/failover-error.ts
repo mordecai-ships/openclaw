@@ -173,6 +173,12 @@ export function resolveFailoverReasonFromError(err: unknown): FailoverReason | n
   if (!message) {
     return null;
   }
+  // Treat unknown/invalid model IDs as a recoverable configuration error when fallbacks exist.
+  // This allows `runWithModelFallback` to advance to the next configured model instead of
+  // aborting the whole run on an unrecognized primary model.
+  if (/unknown model:/i.test(message)) {
+    return "format";
+  }
   return classifyFailoverReason(message);
 }
 

@@ -462,6 +462,24 @@ describe("gateway server chat", () => {
         expect(abortCompleteRes.payload?.aborted).toBe(false);
 
         await writeStore({ main: { sessionId: "sess-main", updatedAt: Date.now() } });
+        const final1P = onceMessage(
+          ws,
+          (o) =>
+            o.type === "event" &&
+            o.event === "chat" &&
+            o.payload?.state === "final" &&
+            o.payload?.runId === "idem-1",
+          8000,
+        );
+        const final2P = onceMessage(
+          ws,
+          (o) =>
+            o.type === "event" &&
+            o.event === "chat" &&
+            o.payload?.state === "final" &&
+            o.payload?.runId === "idem-2",
+          8000,
+        );
         const res1 = await rpcReq(ws, "chat.send", {
           sessionKey: "main",
           message: "first",
@@ -474,42 +492,89 @@ describe("gateway server chat", () => {
           idempotencyKey: "idem-2",
         });
         expect(res2.ok).toBe(true);
-        const final1P = onceMessage(
-          ws,
-          (o) => o.type === "event" && o.event === "chat" && o.payload?.state === "final",
-          8000,
-        );
-        emitAgentEvent({
-          runId: "idem-1",
-          stream: "lifecycle",
-          data: { phase: "end" },
-        });
         const final1 = await final1P;
-        const run1 =
-          final1.payload && typeof final1.payload === "object"
-            ? (final1.payload as { runId?: string }).runId
-            : undefined;
-        expect(run1).toBe("idem-1");
-        const final2P = onceMessage(
-          ws,
-          (o) => o.type === "event" && o.event === "chat" && o.payload?.state === "final",
-          8000,
-        );
-        emitAgentEvent({
-          runId: "idem-2",
-          stream: "lifecycle",
-          data: { phase: "end" },
-        });
         const final2 = await final2P;
-        const run2 =
-          final2.payload && typeof final2.payload === "object"
-            ? (final2.payload as { runId?: string }).runId
-            : undefined;
-        expect(run2).toBe("idem-2");
+        const final1Seq = typeof final1.seq === "number" ? final1.seq : 0;
+        const final2Seq = typeof final2.seq === "number" ? final2.seq : 0;
+        expect(final1Seq).toBeLessThan(final2Seq);
       } finally {
         __setMaxChatHistoryMessagesBytesForTest();
         testState.sessionStorePath = undefined;
         sessionStoreSaveDelayMs.value = 0;
+        ws.close();
+        await server.close();
+        await Promise.all(tempDirs.map((dir) => fs.rm(dir, { recursive: true, force: true })));
+      }
+    },
+  );
+
+  test(
+    "mirrors final replies without agent events into the transcript + chat stream",
+    { timeout: 30_000 },
+    async () => {
+      const tempDirs: string[] = [];
+      const { server, ws } = await startServerWithClient();
+      const spy = vi.mocked(getReplyFromConfig);
+      const resetSpy = () => {
+        spy.mockReset();
+        spy.mockResolvedValue(undefined);
+      };
+
+      try {
+        await connectOk(ws);
+        const sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-gw-"));
+        tempDirs.push(sessionDir);
+        testState.sessionStorePath = path.join(sessionDir, "sessions.json");
+        await writeSessionStore({
+          entries: {
+            main: { sessionId: "sess-mirror", updatedAt: Date.now() },
+          },
+        });
+
+        resetSpy();
+        spy.mockImplementationOnce(async (_ctx, opts) => {
+          // Simulate the embedded runner calling onAgentRunStart even though it bails out early.
+          opts?.onAgentRunStart?.(opts.runId ?? "idem-mirror-1");
+          return { text: "mirror-ok" };
+        });
+
+        const mirrorFinalP = onceMessage(
+          ws,
+          (o) =>
+            o.type === "event" &&
+            o.event === "chat" &&
+            o.payload?.state === "final" &&
+            o.payload?.runId === "idem-mirror-1",
+          8000,
+        );
+        sendReq(ws, "send-mirror-1", "chat.send", {
+          sessionKey: "main",
+          message: "hello",
+          idempotencyKey: "idem-mirror-1",
+          timeoutMs: 30_000,
+        });
+        const sendMirrorRes = await onceMessage(
+          ws,
+          (o) => o.type === "res" && o.id === "send-mirror-1",
+          8000,
+        );
+        expect(sendMirrorRes.ok).toBe(true);
+
+        const mirrorFinal = await mirrorFinalP;
+        const mirrorPayload =
+          mirrorFinal.payload && typeof mirrorFinal.payload === "object"
+            ? (mirrorFinal.payload as { message?: { content?: Array<{ text?: string }> } })
+            : undefined;
+        const mirrorText = mirrorPayload?.message?.content?.[0]?.text ?? "";
+        expect(mirrorText).toContain("mirror-ok");
+
+        const mirrorTranscript = await fs.readFile(
+          path.join(sessionDir, "sess-mirror.jsonl"),
+          "utf-8",
+        );
+        expect(mirrorTranscript).toContain("mirror-ok");
+      } finally {
+        testState.sessionStorePath = undefined;
         ws.close();
         await server.close();
         await Promise.all(tempDirs.map((dir) => fs.rm(dir, { recursive: true, force: true })));

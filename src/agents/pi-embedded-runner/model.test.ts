@@ -127,4 +127,16 @@ describe("resolveModel", () => {
     expect(result.model?.provider).toBe("custom");
     expect(result.model?.id).toBe("missing-model");
   });
+
+  it("allows unknown Claude model ids for Anthropic provider (forward compat)", () => {
+    const result = resolveModel("anthropic", "claude-opus-4-6", "/tmp/agent");
+
+    expect(result.error).toBeUndefined();
+    expect(result.model).toMatchObject({
+      provider: "anthropic",
+      id: "claude-opus-4-6",
+      api: "anthropic-messages",
+      baseUrl: "https://api.anthropic.com",
+    });
+  });
 });
