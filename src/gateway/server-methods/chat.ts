@@ -91,6 +91,7 @@ function ensureTranscriptFile(params: { transcriptPath: string; sessionId: strin
 function appendAssistantTranscriptMessage(params: {
   message: string;
   label?: string;
+  command?: boolean;
   sessionId: string;
   storePath: string | undefined;
   sessionFile?: string;
@@ -127,6 +128,7 @@ function appendAssistantTranscriptMessage(params: {
     timestamp: now,
     stopReason: "injected",
     usage: { input: 0, output: 0, totalTokens: 0 },
+    ...(params.command ? { command: true } : {}),
   };
   const transcriptEntry = {
     type: "message",
@@ -444,6 +446,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       respond(true, ackPayload, undefined, { runId: clientRunId });
 
       const trimmedMessage = parsedMessage.trim();
+      const isCommandMessage = trimmedMessage.startsWith("/");
       const injectThinking = Boolean(
         p.thinking && trimmedMessage && !trimmedMessage.startsWith("/"),
       );
@@ -521,7 +524,16 @@ export const chatHandlers: GatewayRequestHandlers = {
         },
       })
         .then(() => {
-          if (!agentRunStarted) {
+          const sawAgentEvents = context.agentRunSeq.has(clientRunId);
+          // If the reply pipeline returns a final payload without ever emitting agent
+          // events (e.g. unknown model / pre-run validation), server-chat never sees a
+          // lifecycle end to emit the chat.final event. Mirror the dispatcher payload
+          // into the session transcript and broadcast a final chat event so the UI
+          // doesn't hang on the reading indicator.
+          const shouldMirrorReply = !sawAgentEvents;
+          const wasAborted = context.chatAbortedRuns.has(clientRunId);
+
+          if (!wasAborted && (!agentRunStarted || shouldMirrorReply)) {
             const combinedReply = finalReplyParts
               .map((part) => part.trim())
               .filter(Boolean)
@@ -535,6 +547,7 @@ export const chatHandlers: GatewayRequestHandlers = {
               const sessionId = latestEntry?.sessionId ?? entry?.sessionId ?? clientRunId;
               const appended = appendAssistantTranscriptMessage({
                 message: combinedReply,
+                command: isCommandMessage,
                 sessionId,
                 storePath: latestStorePath,
                 sessionFile: latestEntry?.sessionFile,
@@ -553,8 +566,21 @@ export const chatHandlers: GatewayRequestHandlers = {
                   timestamp: now,
                   stopReason: "injected",
                   usage: { input: 0, output: 0, totalTokens: 0 },
+                  ...(isCommandMessage ? { command: true } : {}),
                 };
               }
+            } else if (isCommandMessage) {
+              // Always mark command runs as completed for the UI, even if the command handler
+              // produced no assistant-visible output.
+              const now = Date.now();
+              message = {
+                role: "assistant",
+                content: [{ type: "text", text: "" }],
+                timestamp: now,
+                stopReason: "injected",
+                usage: { input: 0, output: 0, totalTokens: 0 },
+                command: true,
+              };
             }
             broadcastChatFinal({
               context,
